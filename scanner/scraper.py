@@ -87,9 +87,28 @@ def google_news_rss_url(query:str, days:int=7) -> str:
 
 # Additional direct feeds (edit/extend as needed)
 RSS_FEEDS = [
+    FCDO_TZ_ATOM,
+    ALLAFRICA_TZ_RDF,
+]
     # UK Travel Advice (site has RSS per country, but if unavailable, Google News above will catch updates)
     # Add reputable local outlets if they have RSS
 ]
+
+# --- Official / high-signal sources ---
+
+# UK FCDO Atom feed for Tanzania travel advice
+FCDO_TZ_ATOM = "https://www.gov.uk/foreign-travel-advice/tanzania.atom"  # GOV.UK Atom, updated frequently
+
+# AllAfrica Tanzania country headlines (RSS/RDF)
+ALLAFRICA_TZ_RDF = "https://allafrica.com/tools/headlines/rdf/tanzania/headlines.rdf"
+
+# U.S. Embassy Dar es Salaam alert listings (HTML pages; we’ll scrape)
+EMBASSY_ALERT_LISTS = [
+    "https://tz.usembassy.gov/category/alert/",
+    "https://tz.usembassy.gov/category/security-and-emergency-messages/",
+    "https://tz.usembassy.gov/tag/security-alerts/",
+]
+
 
 def iterate_items_from_rss(url):
     try:
@@ -148,6 +167,44 @@ def shorten_source(link_or_source:str) -> str:
     except Exception:
         pass
     return link_or_source[:40]
+  
+def scrape_us_embassy_alerts(list_urls, limit_per_list=20):
+    """Return entries from U.S. Embassy Dar es Salaam alert listing pages."""
+    out = []
+    hdrs = {"User-Agent": "Mozilla/5.0 (alerts-scanner)"}
+    for url in list_urls:
+        try:
+            r = requests.get(url, headers=hdrs, timeout=20)
+            r.raise_for_status()
+            html = r.text
+
+            # very lightweight parsing: find article blocks with links + (optional) datetime
+            # 1) links
+            links = re.findall(r'<a[^>]+href="(https://tz\\.usembassy\\.gov/[^"]+)"[^>]*>([^<]+)</a>', html, re.I)
+            # 2) datetimes (may or may not appear on listing pages)
+            times = re.findall(r'<time[^>]+datetime="([^"]+)"', html, re.I)
+
+            seen_links = set()
+            for href, title in links[:limit_per_list]:
+                if "tz.usembassy.gov" not in href:
+                    continue
+                if href in seen_links:
+                    continue
+                seen_links.add(href)
+
+                # crude guess at published (fallback to NOW)
+                published = times[0] if times else ""
+
+                out.append({
+                    "source": "U.S. Embassy Tanzania (Alerts)",
+                    "title": title.strip(),
+                    "link": href,
+                    "published": published,
+                    "summary": "",
+                })
+        except Exception as e:
+            print(f"Embassy scrape error for {url}: {e}")
+    return out
 
 def main():
     items = []
@@ -162,7 +219,11 @@ def main():
     for url in RSS_FEEDS:
         for it in iterate_items_from_rss(url):
             items.append(it)
-
+          
+    # Embassy alert pages (HTML scrape)
+    embassy_items = scrape_us_embassy_alerts(EMBASSY_ALERT_LISTS)
+    items.extend(embassy_items)
+  
     # De-dup and filter
     seen = set()
     relevant = []
